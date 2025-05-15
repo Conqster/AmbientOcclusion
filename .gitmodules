@@ -1,0 +1,3 @@
+[submodule "PreglRenderer"]
+	path = PreglRenderer
+	url = https://github.com/Conqster/PreglRenderer.git

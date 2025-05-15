@@ -1,0 +1,19 @@
+
+#build output 
+#avoid bin in dependencies (libs)
+/bin/
+*.dir/
+/x64
+
+#VS Community temorary files
+.vs/
+
+
+#cmake generate files
+CMakeFiles/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+/*.cmake
+*CMakeCache.txt
+*.sln
