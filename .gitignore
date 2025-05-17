@@ -2,6 +2,7 @@
 #build output 
 #avoid bin in dependencies (libs)
 /bin/
+/Debug/
 *.dir/
 /x64
 
