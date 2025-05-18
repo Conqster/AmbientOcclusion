@@ -17,7 +17,7 @@ in vec2 vUV;
 in vec3 vFragPos;
 in vec3 vViewPos;
 
-in mat3 vViewMatrix3x3;
+in mat4 vViewMatrix;
 
 layout(binding = 0) uniform sampler2D uAlbedoSpec; //includes {Diffuse and specular}
 layout(binding = 1) uniform sampler2D uPosition;
@@ -35,17 +35,23 @@ uniform bool uEnableAO = true;
 uniform bool uBlurAO = true;
 
 uniform bool uOnlyAORender = false;
+uniform bool uWSSample = false;
 
 //Functions
-vec3 ComputeDirectionalLight(DirectionalLight light, vec3 base_colour, float shinness, vec3 N, vec3 V);
-//float DirShadowCalculation(vec4 shadow_coord);
-
+vec3 ComputeLightingVS();
+vec3 ComputeLightingWS();
 float OcclusionBoxBlur();
 float OcclusionGaussianBlur();
 
 void main()
 {
+	vec3 compute_lighting = (uWSSample) ? ComputeLightingWS() : ComputeLightingVS();
+	FragColour = vec4(compute_lighting, 1.0f);
+}
 
+
+vec3 ComputeLightingVS()
+{
 	vec3 frag_pos = texture(uPosition, vUV).xyz;
 	vec3 normal = texture(uNormal, vUV).xyz;
 	vec3 albedo = texture(uAlbedoSpec, vUV).rgb;
@@ -70,85 +76,73 @@ void main()
 		vec3 ambient = 0.7f * ambient_colour * ao;
 		//ambient *= uDirectionalLight.ambient;
 		
-		vec3 light_dir_viewspace =  normalize(vViewMatrix3x3 * uDirectionalLight.direction);
+		vec3 light_dir_VS =  normalize(mat3(vViewMatrix) * uDirectionalLight.direction);
 		
 		//frag diffuse
-		float factor = max(dot(normal, light_dir_viewspace), 0.0f);
+		float factor = max(dot(normal, light_dir_VS), 0.0f);
 		vec3 diffuse = factor * uDirectionalLight.diffuse * albedo;
 	
 		//frag specular 
 		vec3 view_dir = normalize(-frag_pos);
-		vec3 H = normalize(light_dir_viewspace + view_dir);
+		vec3 H = normalize(light_dir_VS + view_dir);
 		float spec = pow(max(dot(normal, H), 0.0f), shinness);
 		vec3 compute_specular = uDirectionalLight.specular * spec;// * specular;
 	
 		lighting = ambient + diffuse + compute_specular;
 	}
-
-	FragColour = vec4(lighting, 1.0f);
-	
-	
-	if(uOnlyAORender)
-		FragColour = vec4(ao);
-	
-}
-
-
-vec3 ComputeDirectionalLight(DirectionalLight light, vec3 base_colour, float shinness, vec3 N, vec3 V)
-{
-	vec3 ambient = 0.2f * light.ambient * base_colour;
-
-	//diffuse component
-	vec3 Ld = normalize(light.direction);//light direction
-	//Lambert cosine law
-	float factor = max(dot(N, Ld), 0.0f);
-	vec3 diffuse = light.diffuse * base_colour * factor; 
-	
-	float specularity = 0.0f;
-	//specular component (Blinn-Phong)
-	if(!uPhongRendering)
-	{
-		//halfway 
-		vec3 H = normalize(Ld + V);
-		specularity = pow(max(dot(N, H), 0.0f), shinness);
-	}
-	else
-	{
-		specularity = pow(max(dot(N, Ld), 0.0f), shinness);
-	}
-	//vec3 specular = light.specular * mat.specular * specularity;
-	vec3 specular = light.specular * specularity;
-
-	float shadow = 0.0f;
 		
-	return ambient + ((1.0f - shadow) * diffuse + specular);
+	if(uOnlyAORender)
+		lighting = vec3(ao);
+		
+	return lighting;
 }
 
 
-
-float DirShadowCalculation(vec4 shadow_coord)
+vec3 ComputeLightingWS()
 {
+	vec3 frag_pos = texture(uPosition, vUV).xyz;
+	vec3 normal = normalize(texture(uNormal, vUV).xyz);
+	vec3 albedo = texture(uAlbedoSpec, vUV).rgb;
+	float specular = texture(uAlbedoSpec, vUV).a;
+	vec3 ambient_colour = texture(uMaterialData, vUV).rgb;
+	float shinness = texture(uMaterialData, vUV).a;
 	
-	//project texture coordinate & fecth the center sample
-	vec3 p = shadow_coord.xyz / shadow_coord.w;
+	float ao = 1.0f;
+	if(uEnableAO&&uBlurAO)
+	{
+		ao = OcclusionBoxBlur();
+		//ao = OcclusionGaussianBlur();
+	}
+	else if(uEnableAO&&!uBlurAO)
+		ao = texture(uSSAO, vUV).r;
 	
-	p = p * 0.5f + 0.5f;
 	
-	//Using PCF
-    float shadow = 0.0f;
-	float bias = 0.00f;
-    vec2 texelSize = 1.0f / textureSize(uShadowMap, 0);
-    for(int x = -1; x <= 1; ++x)
-    {
-        for(int y = -1; y <= 1; ++y)
-        {
-            float pcfDepth = texture(uShadowMap, p.xy + vec2(x, y) * texelSize).r;
-            shadow += p.z - bias > pcfDepth ? 1.0f : 0.0f;
-        }
-    }
-    shadow /= 10.0f;
-    
-    return shadow;
+	vec3 lighting = vec3(0.0f);
+	if(uDirectionalLight.enable)
+	{
+		//frag ambient
+		vec3 ambient = 0.7f * ambient_colour * ao;
+		//ambient *= uDirectionalLight.ambient;
+		
+		vec3 light_dir_VS =  normalize(uDirectionalLight.direction);
+		
+		//frag diffuse
+		float factor = max(dot(normal, light_dir_VS), 0.0f);
+		vec3 diffuse = factor * uDirectionalLight.diffuse * albedo;
+	
+		//frag specular 
+		vec3 view_dir = normalize(vViewPos - frag_pos);
+		vec3 H = normalize(light_dir_VS + view_dir);
+		float spec = pow(max(dot(normal, H), 0.0f), shinness);
+		vec3 compute_specular = uDirectionalLight.specular * spec;// * specular;
+	
+		lighting = ambient + diffuse + compute_specular;
+	}
+		
+	if(uOnlyAORender)
+		lighting = vec3(ao);
+		
+	return lighting;
 }
 
 

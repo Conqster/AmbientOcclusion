@@ -8,6 +8,8 @@
 #include "pregl/Renderer/Shader.h"
 #include "pregl/Renderer/GPUVertexData.h"
 
+#include "pregl/Core/ShaderHotReloadTracker.h"
+
 //FORWARD DECLARE
 struct BaseMaterial;
 class EditorCamera;
@@ -33,6 +35,19 @@ struct GameObject
 	bool asMultipleMesh = false;
 	std::vector<RenderableMesh> meshes;
 };
+
+
+enum class EAOSampleType : uint8_t
+{
+	VS_SAMPLE,
+	WS_SAMPLE,
+
+	COUNT,
+};
+static std::array<const char*, static_cast<size_t>(EAOSampleType::COUNT)> AOSampleTypeToStringArray()
+{
+	return{ "VS_SAMPLE", "WS_SAMPLE"};
+}
 
 //SSAO STRUCTURE 
 struct SSAO
@@ -155,6 +170,11 @@ private:
 	Shader mSSAOShader;
 	Shader mGBufferDeferredLighting;
 
+	Shader mGeometryShader_WS;
+	//An extra render targer is not need could have just retrived & cache Texture data
+	//Just for convienvce just have an addtional MRT and easily debugging 
+	GPUResource::MultiRenderTarget mGBuffer_WS;
+
 	std::vector<GameObject> mGameObjects;
 
 	
@@ -166,8 +186,11 @@ private:
 
 	//SSAO data
 	SSAO mSSAOParameters;
+	EAOSampleType mEAOSampleType = EAOSampleType::VS_SAMPLE;
 	std::shared_ptr<GPUResource::Texture> mNoiseTex = nullptr;
 	std::vector<glm::vec3> mSamplingKernelPoints;
+
+	Util::ShaderHotReloadTracker mShaderHotReloaderTracker;
 
 	void InitSceneData();
 	void UpdateUBOs(EditorCamera& cam, float aspect_ratio);

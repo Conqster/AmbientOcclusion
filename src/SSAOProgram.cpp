@@ -104,6 +104,17 @@ void SSAOProgram::OnUpdate(float delta_time)
 	mGBuffer_VS.UnBind();
 
 
+	mGBuffer_WS.Bind();
+	//main scene render pass
+	glClearColor(mClearColour.r, mClearColour.g, mClearColour.b, mClearColour.a);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	DrawScene(mGeometryShader_WS, true);
+	mGBuffer_WS.UnBind();
+
+
+	auto sampling_gbuffer = &mGBuffer_VS;
+	if (mEAOSampleType == EAOSampleType::WS_SAMPLE)
+		sampling_gbuffer = &mGBuffer_WS;
 
 	//SSAO pass 
 	mSSAOFBO.Bind();
@@ -139,10 +150,11 @@ void SSAOProgram::OnUpdate(float delta_time)
 	//normal => 1
 	//albedo spec => 2
 	//material data => 3
-	mGBuffer_VS.BindTextureIdx(0, 0);
-	mGBuffer_VS.BindTextureIdx(1, 1);
+	sampling_gbuffer->BindTextureIdx(0, 0);
+	sampling_gbuffer->BindTextureIdx(1, 1);
 	mNoiseTex->Activate(2);
 	mSSAOShader.SetUniformMat4("uProjection", mCamera->ProjMat(mDisplayManager->GetAspectRatio()));
+	mSSAOShader.SetUniform1i("uWSSample", (mEAOSampleType == EAOSampleType::WS_SAMPLE));
 	mMeshBuffer[1].Draw();
 	mSSAOFBO.UnBind();
 
@@ -177,15 +189,16 @@ void SSAOProgram::OnUpdate(float delta_time)
 	mGBufferDeferredLighting.SetUniform1i("uMaterialData", 3);
 	mGBufferDeferredLighting.SetUniform1i("uSSAO", 5);
 	mGBufferDeferredLighting.SetUniform1i("uOnlyAORender", bOnlyRenderAONoLighting);
+	mGBufferDeferredLighting.SetUniform1i("uWSSample", (mEAOSampleType == EAOSampleType::WS_SAMPLE));
 	//MRT 
 //position => 0
 //normal => 1
 //albedo spec => 2
 //material data => 3
-	mGBuffer_VS.BindTextureIdx(0, 1);
-	mGBuffer_VS.BindTextureIdx(1, 2);
-	mGBuffer_VS.BindTextureIdx(2, 0);
-	mGBuffer_VS.BindTextureIdx(3, 3);
+	sampling_gbuffer->BindTextureIdx(0, 1);
+	sampling_gbuffer->BindTextureIdx(1, 2);
+	sampling_gbuffer->BindTextureIdx(2, 0);
+	sampling_gbuffer->BindTextureIdx(3, 3);
 	mSSAOFBO.BindTexture(5);
 	//for (int i = 0; i < 64; ++i)
 	//	mPostRenderTargetShader.SetUniformVec3(("uSamples[" + std::to_string(i) + "]").c_str(), mSamplingKernelPoints[i]);
@@ -199,6 +212,7 @@ void SSAOProgram::OnUpdate(float delta_time)
 
 void SSAOProgram::OnLateUpdate(float delta_time)
 {
+	mShaderHotReloaderTracker.Update();
 }
 
 void SSAOProgram::OnDestroy()
@@ -210,6 +224,7 @@ void SSAOProgram::OnUI()
 	GameObjectsInspectorEditor(mGameObjects);
 
 	UI::Windows::MultiRenderTargetViewport(mGBuffer_VS);
+	UI::Windows::MultiRenderTargetViewport(mGBuffer_WS);
 	UI::Windows::RenderTargetViewport(mSSAOFBO);
 
 	UI::Windows::SingleTextureEditor(*mNoiseTex, "Noise Texture Debug!!!!!!");
@@ -251,6 +266,10 @@ void SSAOProgram::OnUI()
 	if (ImGui::Begin("SSAO Inspector Editor UI"))
 	{
 		SSAO prev_ssao = mSSAOParameters;
+		int ao_sample_type = static_cast<int>(mEAOSampleType);
+		auto ao_sample_enum_string_as_array = AOSampleTypeToStringArray();
+		if (ImGui::Combo("AO sample type", &ao_sample_type, ao_sample_enum_string_as_array.data(), ao_sample_enum_string_as_array.size()))
+			mEAOSampleType = static_cast<EAOSampleType>(ao_sample_type);
 		ImGui::SliderInt("Noise Size", &mSSAOParameters.noiseSize, 1, 32);
 		ImGui::SliderInt("Kernel Size", &mSSAOParameters.kernelSize, 2, 256);
 		ImGui::SliderFloat("AO power", &mSSAOParameters.power, 0.1f, 15.0f, "%.2f");
@@ -473,6 +492,7 @@ void SSAOProgram::InitSceneData()
 
 
 	mSSAOShader.Create("ssao shader", PGL_ASSETS_PATH"/shaders/TextureToScreen.vert", "assets/shaders/AO/SSAO.frag");
+	mShaderHotReloaderTracker.AddShader(&mSSAOShader);
 
 	PGL_ASSERT_CRITICAL(mDisplayManager, "No Display Window to retrive screen dimension from");
 	GPUResource::TextureParameter render_target_para[4] =
@@ -484,12 +504,19 @@ void SSAOProgram::InitSceneData()
 	};
 	mGBuffer_VS.Generate(mDisplayManager->GetWidth(), mDisplayManager->GetHeight(), 4, {}, render_target_para);
 	REGISTER_RESIZE_CALLBACK_HELPER((*mDisplayManager), &GPUResource::MultiRenderTarget::ResizeBuffer, &mGBuffer_VS);
-	mGeometryShader_VS.Create("scene geometry shader", "assets/shaders/AO/ViewSpaceGBuffer.vert", "assets/shaders/AO/ViewSpaceGBuffer.frag");
+	mGeometryShader_VS.Create("scene geometry shader vs", "assets/shaders/AO/ViewSpaceGBuffer.vert", "assets/shaders/AO/ViewSpaceGBuffer.frag");
+
+	//world space buffer
+	mGBuffer_WS.Generate(mDisplayManager->GetWidth(), mDisplayManager->GetHeight(), 4, {}, render_target_para);
+	REGISTER_RESIZE_CALLBACK_HELPER((*mDisplayManager), &GPUResource::MultiRenderTarget::ResizeBuffer, &mGBuffer_WS);
+	mGeometryShader_WS.Create("scene geometry shader ws", "assets/shaders/AO/WorldSpaceGBuffer.vert", "assets/shaders/AO/WorldSpaceGBuffer.frag");
+	mShaderHotReloaderTracker.AddShader(&mGeometryShader_WS);
 
 	//vert --> need to output screen size quad
 	//frag --> process the Guffer outputs with light data 
 	mGBufferDeferredLighting.Create("deffered lighting", PGL_ASSETS_PATH"/shaders/TextureToScreen.vert", "assets/shaders/AO/ViewSpaceDeferredLighting.frag");
 	mGBufferDeferredLighting.SetUniformBlockIdx("uCameraMat", 0);
+	mShaderHotReloaderTracker.AddShader(&mGBufferDeferredLighting);
 
 	GPUResource::TextureParameter fbo_tex_para =
 	{
